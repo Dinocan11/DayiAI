@@ -4,40 +4,36 @@ import os
 import shelve
 import re
 
-# Türkçe karakter filtresi
-TURKCE_PATTERN = re.compile(r'^[a-züğışçöâîûı]+$')
+# Support for English and Turkish characters
+WORD_PATTERN = re.compile(r'^[a-züğışçöâîûı]+$')
 
-# ── Dosya yolları ──
-VERI_DOSYASI  = "veri.txt"
-HAFIZA_DB     = "hafiza"          # shelve → hafiza.db / hafiza.dir / hafiza.bak oluşturur
-CHUNK_SATIR   = 50_000            # Kaç satırda bir ilerleme gösterelim
+# ── File Paths ──
+DATA_FILE = "data.txt"
+MEMORY_DB = "memory"          # Generates memory.db / .dir / .bak depending on OS
+CHUNK_SIZE = 50_000           # Progress update interval
 
 # ══════════════════════════════════════════════════════════════
-#  SINIF
+#  MARKOV AI CLASS
 # ══════════════════════════════════════════════════════════════
-class BasitZeka:
+class DayiAI:
     """
-    Disk-backed Markov zinciri (trigram + bigram fallback).
-    Hafıza Python shelve ile tutulur — tüm veri RAM'e alınmaz.
+    Disk-backed Markov Chain (Trigram + Bigram fallback).
+    Uses Python 'shelve' for memory management — RAM friendly.
     """
 
     def __init__(self):
         self._db = None
-        self._ac()
+        self._open_db()
 
-    # ──────────────────────────────────────────
-    # Shelve Yönetimi
-    # ──────────────────────────────────────────
-    def _ac(self):
+    def _open_db(self):
         if self._db is None:
-            self._db = shelve.open(HAFIZA_DB, flag="c", writeback=False)
+            self._db = shelve.open(MEMORY_DB, flag="c", writeback=False)
 
-    def kapat(self):
+    def close(self):
         if self._db is not None:
             self._db.close()
             self._db = None
 
-    # ── Anahtar yardımcıları ────────────────────────────────
     @staticmethod
     def _tri_key(k1: str, k2: str) -> str:
         return f"t\x00{k1}\x00{k2}"
@@ -47,168 +43,170 @@ class BasitZeka:
         return f"b\x00{k}"
 
     @staticmethod
-    def _turkce_mi(kelime: str) -> bool:
-        """Yabancı/bozuk kelimeleri filtrele — sadece Türkçe karakterler geçsin."""
-        return bool(TURKCE_PATTERN.match(kelime.lower()))
+    def _is_valid_word(word: str) -> bool:
+        """Filter out non-alphabetical or broken words."""
+        return bool(WORD_PATTERN.match(word.lower()))
 
-    def _ekle(self, anahtar: str, deger: str):
-        """writeback=False — nesneyi elle geri yazıyoruz."""
-        mevcut = self._db.get(anahtar, [])
-        mevcut.append(deger)
-        self._db[anahtar] = mevcut
+    def _add_entry(self, key: str, value: str):
+        """Append value to the list stored in shelve."""
+        current = self._db.get(key, [])
+        current.append(value)
+        self._db[key] = current
 
     # ──────────────────────────────────────────
-    # Eğitim  (satır satır, RAM dostu)
+    # Training (Line by line, RAM efficient)
     # ──────────────────────────────────────────
-    def egit(self, dosya_yolu: str = VERI_DOSYASI):
-        if not os.path.exists(dosya_yolu):
-            print(f"[HATA] {dosya_yolu} bulunamadı!")
+    def train(self, file_path: str = DATA_FILE):
+        if not os.path.exists(file_path):
+            print(f"[ERROR] {file_path} not found!")
             sys.exit(1)
 
-        boyut_mb = os.path.getsize(dosya_yolu) / 1_048_576
-        print(f"[Eğitim başlıyor — {boyut_mb:.1f} MB, sabırlı ol kanka 😅]")
+        size_mb = os.path.getsize(file_path) / 1_048_576
+        print(f"[Training started — {size_mb:.1f} MB, please be patient... 😅]")
 
-        toplam_kelime = 0
-        onceki: list = []
+        total_words = 0
+        previous_words: list = []
 
-        with open(dosya_yolu, "r", encoding="utf-8", errors="ignore") as f:
-            for satir_no, satir in enumerate(f, 1):
-                kelimeler = satir.lower().split()
-                if not kelimeler:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line_no, line in enumerate(f, 1):
+                words = line.lower().split()
+                if not words:
                     continue
 
-                # Satırlar arası bağlantıyı koru
-                pencere = onceki + kelimeler
+                # Maintain connection between lines
+                window = previous_words + words
 
-                for i in range(len(pencere) - 1):
-                    self._ekle(self._bi_key(pencere[i]), pencere[i + 1])
+                for i in range(len(window) - 1):
+                    self._add_entry(self._bi_key(window[i]), window[i + 1])
 
-                for i in range(len(pencere) - 2):
-                    self._ekle(self._tri_key(pencere[i], pencere[i + 1]), pencere[i + 2])
+                for i in range(len(window) - 2):
+                    self._add_entry(self._tri_key(window[i], window[i + 1]), window[i + 2])
 
-                onceki = kelimeler[-2:] if len(kelimeler) >= 2 else kelimeler
-                toplam_kelime += len(kelimeler)
+                previous_words = words[-2:] if len(words) >= 2 else words
+                total_words += len(words)
 
-                if satir_no % CHUNK_SATIR == 0:
-                    print(f"  → {satir_no:,} satır / {toplam_kelime:,} kelime işlendi...")
+                if line_no % CHUNK_SIZE == 0:
+                    print(f"  → {line_no:,} lines / {total_words:,} words processed...")
 
-        print(f"[Eğitim tamam ✓ — toplam {toplam_kelime:,} kelime]")
-        print(f"[Hafıza '{HAFIZA_DB}.db' dosyasına yazıldı ✓]")
+        print(f"[Training complete ✓ — Total {total_words:,} words]")
+        print(f"[Memory saved to '{MEMORY_DB}' database ✓]")
 
     # ──────────────────────────────────────────
-    # Akıllı Başlangıç Noktası
+    # Smart Starting Point
     # ──────────────────────────────────────────
-    def _en_iyi_baslangic(self, kelimeler: list):
-        for i in range(len(kelimeler) - 1):
-            k = self._tri_key(kelimeler[i], kelimeler[i + 1])
+    def _get_best_start(self, words: list):
+        for i in range(len(words) - 1):
+            k = self._tri_key(words[i], words[i + 1])
             if k in self._db:
-                return (kelimeler[i], kelimeler[i + 1])
+                return (words[i], words[i + 1])
 
-        for k in kelimeler:
+        for k in words:
             if self._bi_key(k) in self._db:
                 return k
 
         return None
 
     # ──────────────────────────────────────────
-    # Cevap Üretimi
+    # Response Generation
     # ──────────────────────────────────────────
-    def cevap_ver(self, sorgu: str, uzunluk: int = 15) -> str:
-        kelimeler = sorgu.lower().split()
-        if not kelimeler:
-            return "Bir şeyler yaz bakalım 🙂"
+    def generate_response(self, query: str, length: int = 15) -> str:
+        words = query.lower().split()
+        if not words:
+            return "Say something! 🙂"
 
-        baslangic = self._en_iyi_baslangic(kelimeler)
+        start = self._get_best_start(words)
 
-        # ── Trigram yolu ──
-        if isinstance(baslangic, tuple):
-            k1, k2 = baslangic
-            cumle = [k1, k2]
-            for _ in range(uzunluk):
-                secenekler = self._db.get(self._tri_key(k1, k2))
-                if not secenekler:
+        # ── Trigram path ──
+        if isinstance(start, tuple):
+            k1, k2 = start
+            sentence = [k1, k2]
+            for _ in range(length):
+                options = self._db.get(self._tri_key(k1, k2))
+                if not options:
                     break
-                # Türkçe olmayan kelimeleri atla, max 10 denemede bulamazsan dur
-                k3 = None
+                
+                next_word = None
                 for _ in range(10):
-                    aday = random.choice(secenekler)
-                    if self._turkce_mi(aday):
-                        k3 = aday
+                    candidate = random.choice(options)
+                    if self._is_valid_word(candidate):
+                        next_word = candidate
                         break
-                if not k3:
+                
+                if not next_word:
                     break
-                cumle.append(k3)
-                k1, k2 = k2, k3
-            return " ".join(cumle).capitalize()
+                sentence.append(next_word)
+                k1, k2 = k2, next_word
+            return " ".join(sentence).capitalize()
 
         # ── Bigram fallback ──
-        if isinstance(baslangic, str):
-            cumle = [baslangic]
-            su_an = baslangic
-            for _ in range(uzunluk):
-                secenekler = self._db.get(self._bi_key(su_an))
-                if not secenekler:
+        if isinstance(start, str):
+            sentence = [start]
+            current = start
+            for _ in range(length):
+                options = self._db.get(self._bi_key(current))
+                if not options:
                     break
-                # Türkçe olmayan kelimeleri atla, max 10 denemede bulamazsan dur
-                sonraki = None
+                
+                next_word = None
                 for _ in range(10):
-                    aday = random.choice(secenekler)
-                    if self._turkce_mi(aday):
-                        sonraki = aday
+                    candidate = random.choice(options)
+                    if self._is_valid_word(candidate):
+                        next_word = candidate
                         break
-                if not sonraki:
+                
+                if not next_word:
                     break
-                cumle.append(sonraki)
-                su_an = sonraki
-            return " ".join(cumle).capitalize()
+                sentence.append(next_word)
+                current = next_word
+            return " ".join(sentence).capitalize()
 
-        return "Valla kanka o konuyu hiç öğrenmedim, daha fazla veri lazım 🤷"
+        return "I haven't learned about that yet, I need more data 🤷"
 
 
 # ══════════════════════════════════════════════════════════════
-#  ANA PROGRAM
+#  MAIN PROGRAM
 # ══════════════════════════════════════════════════════════════
 def main():
-    zeka = BasitZeka()
+    ai = DayiAI()
 
-    db_bos  = len(zeka._db) == 0
-    veri_var = os.path.exists(VERI_DOSYASI)
+    db_empty = len(ai._db) == 0
+    data_exists = os.path.exists(DATA_FILE)
 
-    if db_bos and not veri_var:
-        print("Kanka ne veri.txt var ne de hafiza.db — önce birini oluştur!")
-        zeka.kapat()
+    if db_empty and not data_exists:
+        print(f"Error: Neither '{DATA_FILE}' nor '{MEMORY_DB}' found!")
+        ai.close()
         sys.exit(1)
 
-    if db_bos and veri_var:
-        # İlk çalıştırma — eğit
-        zeka.egit(VERI_DOSYASI)
-    elif not db_bos and veri_var:
-        # DB zaten dolu
-        print(f"[Mevcut hafıza bulundu ({HAFIZA_DB}.db) — doğrudan yükleniyor]")
-        print("[Yeniden eğitmek için hafiza.db/.dir/.bak dosyalarını sil ve tekrar çalıştır]")
+    if db_empty and data_exists:
+        # First run — Train the model
+        ai.train(DATA_FILE)
+    elif not db_empty and data_exists:
+        # DB is already populated
+        print(f"[Existing memory found ({MEMORY_DB}) — Loading directly]")
+        print("[To retrain, delete memory files and run again]")
 
     print("\n╔════════════════════════════════════╗")
-    print("║   Basit AI Terminaline Hoş Geldin  ║")
-    print("║   Çıkmak için: exit                ║")
+    print("║      Dayi AI Terminal Interface    ║")
+    print("║      Type 'exit' to quit           ║")
     print("╚════════════════════════════════════╝\n")
 
     try:
         while True:
             try:
-                soru = input("Sen: ").strip()
+                user_input = input("You: ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nGörüşürüz!")
+                print("\nGoodbye!")
                 break
 
-            if not soru:
+            if not user_input:
                 continue
-            if soru.lower() == "exit":
-                print("Görüşürüz kanka!")
+            if user_input.lower() == "exit":
+                print("Goodbye!")
                 break
 
-            print("AI:", zeka.cevap_ver(soru))
+            print("AI:", ai.generate_response(user_input))
     finally:
-        zeka.kapat()
+        ai.close()
 
 
 if __name__ == "__main__":
